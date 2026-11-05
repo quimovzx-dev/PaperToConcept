@@ -437,20 +437,70 @@ function refreshResumeUI() {
   $('clearBtn').classList.toggle('hidden', !has);
 }
 
+async function buildPdfDoc() {
+  const ex = $('exportRoot');
+  // render on-screen but behind everything so html2canvas captures it accurately
+  const prev = ex.style.cssText;
+  ex.style.cssText = 'position:fixed;left:0;top:0;z-index:-9999;width:794px;background:#fff;color:#111;padding:40px;';
+  try {
+    const canvas = await html2canvas(ex, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+    const pageW = 210, pageH = 297, margin = 10;
+    const imgWmm = pageW - margin * 2;
+    const pxPerMm = canvas.width / imgWmm;
+    const sliceHPx = Math.floor((pageH - margin * 2) * pxPerMm);
+
+    // find a fully-white row near the ideal break so we do not cut a text line
+    const ctx = canvas.getContext('2d');
+    function whiteRowNear(yIdeal, yMin) {
+      const w = canvas.width;
+      const lo = Math.max(yMin, yIdeal - Math.floor(15 * pxPerMm));
+      const img = ctx.getImageData(0, lo, w, Math.min(yIdeal, canvas.height) - lo).data;
+      const rows = Math.floor(img.length / (w * 4));
+      for (let r = rows - 1; r >= 0; r--) {
+        let white = true;
+        for (let x = 0; x < w; x += 4) {
+          const i = (r * w + x) * 4;
+          if (img[i] < 245 || img[i + 1] < 245 || img[i + 2] < 245) { white = false; break; }
+        }
+        if (white) return lo + r;
+      }
+      return yIdeal;
+    }
+
+    let y = 0, page = 0;
+    while (y < canvas.height) {
+      let h = Math.min(sliceHPx, canvas.height - y);
+      if (y + h < canvas.height) h = whiteRowNear(y + h, y) - y;
+      const slice = document.createElement('canvas');
+      slice.width = canvas.width;
+      slice.height = h;
+      const sctx = slice.getContext('2d');
+      sctx.fillStyle = '#ffffff';
+      sctx.fillRect(0, 0, slice.width, h);
+      sctx.drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
+      if (page > 0) pdf.addPage();
+      pdf.addImage(slice.toDataURL('image/jpeg', 0.92), 'JPEG', margin, margin, imgWmm, h / pxPerMm);
+      y += h;
+      page++;
+    }
+    return pdf;
+  } finally {
+    ex.style.cssText = prev;
+  }
+}
+
 async function downloadPdf() {
   const title = ($('paperTitle').value.trim() || 'solutions').replace(/[^\w\- ]+/g, '').trim() || 'solutions';
-  const opt = {
-    margin: [10, 10, 14, 10],
-    filename: title.replace(/\s+/g, '_') + '_solutions.pdf',
-    image: { type: 'jpeg', quality: 0.95 },
-    html2canvas: { scale: 2, useCORS: true },
-    jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-    pagebreak: { mode: ['css', 'legacy'] },
-  };
-  await html2pdf().set(opt).from($('exportRoot')).save();
+  const pdf = await buildPdfDoc();
+  pdf.save(title.replace(/\s+/g, '_') + '_solutions.pdf');
 }
 
 // ---------- Wiring ----------
+// test/debug handle (no secrets; key is read from the input only)
+window.__p2c = { state, buildPdfDoc: (...args) => buildPdfDoc(...args) };
+
 window.addEventListener('DOMContentLoaded', () => {
   $('apiKey').value = localStorage.getItem(LS_APIKEY) || '';
   $('rememberKey').checked = !!localStorage.getItem(LS_APIKEY);
