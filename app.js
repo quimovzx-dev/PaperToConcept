@@ -453,7 +453,17 @@ async function downloadPdf() {
 // ---------- Wiring ----------
 window.addEventListener('DOMContentLoaded', () => {
   $('apiKey').value = localStorage.getItem(LS_APIKEY) || '';
-  $('apiKey').addEventListener('change', () => localStorage.setItem(LS_APIKEY, $('apiKey').value.trim()));
+  $('rememberKey').checked = !!localStorage.getItem(LS_APIKEY);
+  $('rememberKey').addEventListener('change', () => {
+    if ($('rememberKey').checked) {
+      localStorage.setItem(LS_APIKEY, $('apiKey').value.trim());
+    } else {
+      localStorage.removeItem(LS_APIKEY);
+    }
+  });
+  $('apiKey').addEventListener('change', () => {
+    if ($('rememberKey').checked) localStorage.setItem(LS_APIKEY, $('apiKey').value.trim());
+  });
   $('toggleKey').addEventListener('click', () => {
     $('apiKey').type = $('apiKey').type === 'password' ? 'text' : 'password';
   });
