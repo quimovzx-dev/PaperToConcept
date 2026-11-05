@@ -170,7 +170,7 @@ Return a JSON array, one object per question, in the same order:
  "concept": "<one line: the key idea>",
  "theory": "<2-3 lines: formulas/facts needed, LaTeX in $...$>",
  "steps": ["<step 1>", "<step 2>", ...],
- "answer": "<final answer with the option number/letter if MCQ>",
+ "answer": "<final answer; for MCQ give the option letter AND its value, e.g. (B) 42>",
  "confidence": "high"|"medium"|"low",
  "note": "<only if the question seems defective, ambiguous or depends on an unreadable diagram; else null>"}
 Rules:
@@ -186,6 +186,8 @@ const VERIFY_PROMPT = `Check this worked solution for correctness. Recompute ind
 Question: %Q%
 Proposed answer: %A%
 Proposed steps: %S%
+Judge the ANSWER by substance, not formatting: an option letter vs the option's value, fractions vs decimals, units, and mathematically equivalent expressions all count as the SAME answer.
+Set "correct" to false ONLY when the proposed answer is genuinely wrong in substance; only then put the corrected answer in "fixedAnswer" (otherwise null).
 Return JSON only: {"correct": true|false, "fixedAnswer": "<corrected final answer or null>", "why": "<one line>"}`;
 
 // ---------- Pipeline stages ----------
@@ -250,8 +252,7 @@ async function stageVerify(onProgress) {
     if (!sol) continue;
     const keyAns = (q.answer || '').toString().trim();
     if (hasKey && keyAns) {
-      const a = normAns(sol.answer), k = normAns(keyAns);
-      if (a && k && a !== k) {
+      if (!answersEqual(sol.answer, keyAns, q.options)) {
         state.flags.push({ n: q.n, kind: 'mismatch', detail: `Model answer ${sol.answer} vs printed key ${keyAns}` });
         targets.push(q);
         continue;
@@ -270,8 +271,14 @@ async function stageVerify(onProgress) {
       const res = await callGemini([{ text: prompt }]);
       state.verified[q.n] = true;
       if (res && res.correct === false) {
-        state.flags.push({ n: q.n, kind: 'recheck-failed', detail: `Second-pass check disagrees${res.fixedAnswer ? '; suggests ' + res.fixedAnswer : ''}. ${res.why || ''}` });
-        if (res.fixedAnswer) sol.note = (sol.note ? sol.note + ' ' : '') + `Recheck suggested: ${res.fixedAnswer}`;
+        const sameInSubstance = res.fixedAnswer && answersEqual(res.fixedAnswer, sol.answer, q.options);
+        if (!sameInSubstance) {
+          const detail = res.fixedAnswer
+            ? `Second-pass check disagrees; suggests ${res.fixedAnswer}. ${res.why || ''}`
+            : `Second-pass check could not confirm this answer; review by hand. ${res.why || ''}`;
+          state.flags.push({ n: q.n, kind: 'recheck-failed', detail });
+          if (res.fixedAnswer) sol.note = (sol.note ? sol.note + ' ' : '') + `Recheck suggested: ${res.fixedAnswer}`;
+        }
       }
     } catch (e) {
       log(`Verify skipped for Q${q.n}: ${e.message}`, 'warn');
@@ -288,9 +295,45 @@ async function stageVerify(onProgress) {
   }
 }
 
-function normAns(s) {
-  const m = String(s).match(/\(?([1-4A-Da-d])\)?/);
-  return m ? m[1].toUpperCase().replace(/^([1-4])$/, '$1') : String(s).replace(/[^0-9a-zA-Z.+\-\/^]/g, '').toLowerCase();
+// Compare answers by substance, not string formatting, to avoid false flags:
+// option letters/numbers resolve through the question's options, numbers
+// (including fractions) compare by value, text compares stripped.
+function parseOptionRef(s) {
+  const t = String(s).trim();
+  let m = t.match(/^\(?\s*([A-Da-d])\s*\)?(?=$|[\s.,:\-)])/);
+  if (m) return m[1].toUpperCase();
+  m = t.match(/^\(?\s*(?:option\s*)?([1-9])\s*\)?(?=$|[\s.,:\-)])/i);
+  if (m && Number(m[1]) >= 1 && Number(m[1]) <= 4) return 'ABCD'[Number(m[1]) - 1];
+  return null;
+}
+
+function parseNumVal(s) {
+  const t = String(s).trim().replace(/,/g, '');
+  let m = t.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)(?=$|\D)/);
+  if (m) { const d = parseFloat(m[2]); if (d !== 0) return parseFloat(m[1]) / d; }
+  m = t.match(/-?\d+(?:\.\d+)?/);
+  return m ? parseFloat(m[0]) : null;
+}
+
+function stripText(s) {
+  return String(s).toLowerCase().replace(/[^0-9a-z.+\-\/^\u221a\u03c0]/g, '');
+}
+
+function answersEqual(a, b, options) {
+  a = (a ?? '').toString().trim(); b = (b ?? '').toString().trim();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const na = parseNumVal(a), nb = parseNumVal(b);
+  if (na != null && nb != null && Math.abs(na - nb) <= 1e-6 * Math.max(1, Math.abs(na), Math.abs(nb))) return true;
+  const sa = stripText(a), sb = stripText(b);
+  if (sa && sa === sb) return true;
+  if (Array.isArray(options) && options.length) {
+    const ra = parseOptionRef(a), rb = parseOptionRef(b);
+    if (ra && rb && ra === rb) return true;
+    if (ra) { const t = options['ABCD'.indexOf(ra)]; if (t != null && answersEqual(t, b, null)) return true; }
+    if (rb) { const t = options['ABCD'.indexOf(rb)]; if (t != null && answersEqual(a, t, null)) return true; }
+  }
+  return false;
 }
 
 // ---------- Rendering ----------
