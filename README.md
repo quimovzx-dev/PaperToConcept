@@ -25,11 +25,17 @@ downloadable solutions PDF with, for every question:
 
 ## Privacy and cost
 
-- You use **your own free Gemini API key** from [Google AI Studio](https://aistudio.google.com/).
-  The key is stored only in your browser's local storage and is sent only to Google's API.
-  Nothing is uploaded to any other server - this is a fully client-side static site.
-- Free-tier rate limits apply and vary; the app batches requests, backs off on 429s and
-  saves progress so an interrupted run can resume.
+- The site itself is free and charges nothing. It is a fully client-side static page:
+  your PDF is read in your browser and is never uploaded anywhere except to Google's
+  Gemini API as part of solving requests.
+- You bring **your own Gemini API key** from [Google AI Studio](https://aistudio.google.com/).
+  The key is sent only to Google's API. It is NOT saved unless you tick "Remember key",
+  which keeps it in this browser's local storage.
+- What Google charges depends on YOUR Google project, which this app cannot see or control.
+  A free-tier AI Studio project is not charged; if billing is enabled on your project,
+  Google's API pricing applies. Rate limits and your usage tier are shown in AI Studio.
+  The app batches requests, backs off on 429s and saves progress so an interrupted run
+  can resume, but it cannot guarantee any particular speed or quota.
 - AI solving is not perfect, especially on hard problems. Low-confidence and mismatched
   answers are flagged in the output - treat flags as "double-check by hand".
 
