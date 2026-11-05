@@ -186,7 +186,7 @@ const VERIFY_PROMPT = `Check this worked solution for correctness. Recompute ind
 Question: %Q%
 Proposed answer: %A%
 Proposed steps: %S%
-Judge the ANSWER by substance, not formatting: an option letter vs the option's value, fractions vs decimals, units, and mathematically equivalent expressions all count as the SAME answer.
+Judge the ANSWER by substance, not formatting: an option letter vs the option's value, equivalent fractions vs decimals, valid unit conversions, and mathematically equivalent expressions count as the SAME answer. Different quantities or incompatible units are NOT equivalent. Check the steps too; explain a reasoning error even if the final answer matches.
 Set "correct" to false ONLY when the proposed answer is genuinely wrong in substance; only then put the corrected answer in "fixedAnswer" (otherwise null).
 Return JSON only: {"correct": true|false, "fixedAnswer": "<corrected final answer or null>", "why": "<one line>"}`;
 
@@ -253,7 +253,7 @@ async function stageVerify(onProgress) {
     const keyAns = (q.answer || '').toString().trim();
     if (hasKey && keyAns) {
       if (!answersEqual(sol.answer, keyAns, q.options)) {
-        state.flags.push({ n: q.n, kind: 'mismatch', detail: `Model answer ${sol.answer} vs printed key ${keyAns}` });
+        state.flags.push({ n: q.n, kind: 'mismatch', detail: `Possible answer/key discrepancy: model ${sol.answer} vs printed key ${keyAns}. Check equivalent expressions, units, and option mapping by hand.` });
         targets.push(q);
         continue;
       }
@@ -272,7 +272,9 @@ async function stageVerify(onProgress) {
       state.verified[q.n] = true;
       if (res && res.correct === false) {
         const sameInSubstance = res.fixedAnswer && answersEqual(res.fixedAnswer, sol.answer, q.options);
-        if (!sameInSubstance) {
+        if (sameInSubstance) {
+          state.flags.push({ n: q.n, kind: 'reasoning-review', detail: `Second-pass answer is unchanged, but its correctness assessment conflicts. Review the reasoning by hand. ${res.why || ''}` });
+        } else {
           const detail = res.fixedAnswer
             ? `Second-pass check disagrees; suggests ${res.fixedAnswer}. ${res.why || ''}`
             : `Second-pass check could not confirm this answer; review by hand. ${res.why || ''}`;
@@ -295,45 +297,48 @@ async function stageVerify(onProgress) {
   }
 }
 
-// Compare answers by substance, not string formatting, to avoid false flags:
-// option letters/numbers resolve through the question's options, numbers
-// (including fractions) compare by value, text compares stripped.
-function parseOptionRef(s) {
-  const t = String(s).trim();
-  let m = t.match(/^\(?\s*([A-Da-d])\s*\)?(?=$|[\s.,:\-)])/);
-  if (m) return m[1].toUpperCase();
-  m = t.match(/^\(?\s*(?:option\s*)?([1-9])\s*\)?(?=$|[\s.,:\-)])/i);
-  if (m && Number(m[1]) >= 1 && Number(m[1]) <= 4) return 'ABCD'[Number(m[1]) - 1];
-  return null;
+// Conservative equality: never infer equivalence from a leading digit.
+// Unknown symbolic/unit conversions stay flagged for human review.
+function cleanAnswer(s) {
+  return String(s ?? '').trim().replace(/\$/g, '').replace(/\\(?:left|right)/g, '')
+    .replace(/\\(?:mathrm|text)\{([^{}]*)\}/g, '$1')
+    .replace(/\\(?:t?frac)\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)')
+    .replace(/−/g, '-').replace(/\s+/g, '').toLowerCase();
 }
-
-function parseNumVal(s) {
-  const t = String(s).trim().replace(/,/g, '');
-  let m = t.match(/^(-?\d+(?:\.\d+)?)\s*\/\s*(-?\d+(?:\.\d+)?)(?=$|\D)/);
-  if (m) { const d = parseFloat(m[2]); if (d !== 0) return parseFloat(m[1]) / d; }
-  m = t.match(/-?\d+(?:\.\d+)?/);
-  return m ? parseFloat(m[0]) : null;
+function answerParts(s, options) {
+  let t = String(s ?? '').trim();
+  const m = t.match(/^(?:option\s*([A-D1-4])|\(([A-D1-4])\)|([A-D])(?:[.):]|(?=\s|$)))\s*/i);
+  if (!m || !options?.length) return {value: t};
+  const label = (m[1] || m[2] || m[3]).toUpperCase();
+  const index = /[1-4]/.test(label) ? Number(label) - 1 : 'ABCD'.indexOf(label);
+  const tail = t.slice(m[0].length).trim();
+  const option = options[index];
+  return {value: tail || option || '', option, explicit: true};
 }
-
-function stripText(s) {
-  return String(s).toLowerCase().replace(/[^0-9a-z.+\-\/^\u221a\u03c0]/g, '');
+function numericAnswer(s) {
+  let t = cleanAnswer(s);
+  // Only whole numeric expressions, with identical unit suffixes.
+  const num = '[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:e[+-]?\\d+)?';
+  const m = t.match(new RegExp('^\\(?(' + num + ')\\)?(?:/\\(?(' + num + ')\\)?)?([a-z]+(?:[/*][a-z]+(?:\\^?-?\\d+)?)?(?:\\^?-?\\d+)?)?$'));
+  if (!m) return null;
+  const denominator = m[2] ? Number(m[2]) : 1;
+  if (!denominator) return null;
+  const value = Number(m[1]) / denominator;
+  return Number.isFinite(value) ? {value, unit: m[3] || ''} : null;
 }
-
+function sameValue(a, b) {
+  const ca = cleanAnswer(a), cb = cleanAnswer(b);
+  if (!ca || !cb) return false;
+  if (ca === cb) return true;
+  const na = numericAnswer(a), nb = numericAnswer(b);
+  return !!(na && nb && na.unit === nb.unit && Math.abs(na.value - nb.value) <= 1e-9 * Math.max(1, Math.abs(na.value), Math.abs(nb.value)));
+}
 function answersEqual(a, b, options) {
-  a = (a ?? '').toString().trim(); b = (b ?? '').toString().trim();
-  if (!a || !b) return false;
-  if (a === b) return true;
-  const na = parseNumVal(a), nb = parseNumVal(b);
-  if (na != null && nb != null && Math.abs(na - nb) <= 1e-6 * Math.max(1, Math.abs(na), Math.abs(nb))) return true;
-  const sa = stripText(a), sb = stripText(b);
-  if (sa && sa === sb) return true;
-  if (Array.isArray(options) && options.length) {
-    const ra = parseOptionRef(a), rb = parseOptionRef(b);
-    if (ra && rb && ra === rb) return true;
-    if (ra) { const t = options['ABCD'.indexOf(ra)]; if (t != null && answersEqual(t, b, null)) return true; }
-    if (rb) { const t = options['ABCD'.indexOf(rb)]; if (t != null && answersEqual(a, t, null)) return true; }
-  }
-  return false;
+  const pa = answerParts(a, options), pb = answerParts(b, options);
+  // An explicit label plus a conflicting value is not safe to confirm.
+  if (pa.explicit && !sameValue(pa.value, pa.option)) return false;
+  if (pb.explicit && !sameValue(pb.value, pb.option)) return false;
+  return sameValue(pa.value, pb.value);
 }
 
 // ---------- Rendering ----------
