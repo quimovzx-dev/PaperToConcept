@@ -26,8 +26,14 @@
         <input type="password" id="apiKey" placeholder="Paste your free AI Studio key" autocomplete="off">
         <button id="toggleKey" type="button" class="ghost" title="Show/hide key">&#128065;</button>
       </div>
-      <small>Free key from <a href="https://aistudio.google.com/" target="_blank" rel="noopener">Google AI Studio</a>.
-      Stored only in this browser, sent only to Google. Never in the repo, never anywhere else.</small>
+      <label class="checkrow">
+        <input type="checkbox" id="rememberKey">
+        <span>Remember key in this browser (stored in local storage; anyone using this browser can use it)</span>
+      </label>
+      <small>Get a key in <a href="https://aistudio.google.com/" target="_blank" rel="noopener">Google AI Studio</a>.
+      Sent only to Google's Gemini API, never anywhere else. Not saved unless you tick "remember".
+      Costs depend on YOUR Google project: a free-tier project is not charged, but if billing is
+      enabled on your project, Google's charges apply. Check your tier and limits in AI Studio.</small>
     </label>
     <label class="field">
       <span>Model</span>
